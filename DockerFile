@@ -1,0 +1,16 @@
+FROM rust:1.75 as builder
+WORKDIR /app
+COPY . .
+RUN cargo build --release --bin pointercrate-example
+
+FROM debian:bookworm-slim
+WORKDIR /app
+COPY --from=builder /app/target/release/pointercrate-example .
+COPY --from=builder /app/pointercrate-example/static ./static
+
+# Force Rocket to run on Hugging Face's mandatory port
+ENV ROCKET_PORT=7860
+ENV ROCKET_ADDRESS=0.0.0.0
+
+EXPOSE 7860
+CMD ["./pointercrate-example"]
