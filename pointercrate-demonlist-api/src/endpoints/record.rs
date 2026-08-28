@@ -27,15 +27,6 @@ use rocket::{http::Status, serde::json::Json, tokio, State};
 use sqlx::{pool::PoolConnection, Postgres};
 use std::net::IpAddr;
 
-/// Pagination endpoint for records in case authentication is provided
-///
-/// Subject to the following constraints
-/// + Only users with `LIST_MODERATOR` permissions can filter by submitter.
-/// + Only users with `LIST_HELPER` permissions can filter by record status. For all other users,
-///   the `status` property defaults to `APPROVED` (although explicitly setting the status to
-///   `APPROVED` is allowed, UNLESS we also filter by player and the player we filter by match a
-///   verified claim of the user making the request, in which case access to all records is allowed
-///   (the `status` property does not get defaulted, and filtering on it is allowed)
 #[localized]
 #[rocket::get("/")]
 pub async fn paginate(
@@ -138,14 +129,12 @@ pub async fn submit(
         }
     };
 
-    // Banned submitters cannot submit records
     if submitter.banned {
         return Err(DemonlistError::BannedFromSubmissions.into());
     }
 
     let normalized = submission.normalize(&mut connection).await?;
 
-    // Check if the player is claimed with submissions locked
     if let Some(claim) = normalized.verified_player_claim(&mut connection).await? {
         if claim.lock_submissions {
             match user_id {
@@ -158,10 +147,6 @@ pub async fn submit(
     let validated = normalized.validate(&mut connection).await?;
 
     if !is_team_member {
-        // Check ratelimits before any change is made to the database so that the
-        // transaction rollback is easier.
-
-        // Also check the local ratelimit first since that one expires earlier.
         ratelimits.record_submission(ip)?;
         ratelimits.record_submission_global()?;
     }
@@ -170,11 +155,6 @@ pub async fn submit(
 
     connection.commit().await.map_err(DemonlistError::from)?;
 
-    // Run video validation in the background.
-    //
-    // IMPORTANT:
-    // The validation no longer deletes the record if the video URL cannot
-    // be reached. The record remains in the database for review.
     if status_is_submitted {
         if let Some(ref video) = record.video {
             tokio::spawn(validate(
@@ -222,7 +202,6 @@ pub async fn get(
 
     let mut record = FullRecord::by_id(record_id, &mut connection).await?;
 
-    // TODO: allow access if auth is provided and a verified claim on the record's player is given
     if !is_helper {
         if record.status != RecordStatus::Approved {
             return Err(
@@ -386,7 +365,7 @@ pub async fn add_note(
             .with_header(
                 "Location",
                 format!(
-                    "/api/v1/records/{}/notes/{}/",
+                    "/api/v1/records/{}/notes/{}",
                     record.id,
                     note_id
                 ),
@@ -469,8 +448,7 @@ async fn validate(
                 execute_webhook(body).await;
             } else {
                 warn!(
-                    "Server response to 'GET {}' was {:?}. \
-                     Keeping submission {} for review.",
+                    "Server response to GET {} was {:?}. Keeping submission {} for review.",
                     video, response, record_id
                 );
             }
@@ -478,8 +456,7 @@ async fn validate(
 
         Err(error) => {
             error!(
-                "INTERNAL SERVER ERROR: GET request to verify video failed: {:?}. \
-                 Keeping submission {} for review.",
+                "GET request to verify video failed: {:?}. Keeping submission {} for review.",
                 error, record_id
             );
         }
