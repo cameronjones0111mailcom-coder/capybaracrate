@@ -54,7 +54,7 @@ query: Query<RecordPagination>,
 ) -> Result<Response2<Json<Vec<MinimalRecordPD>>>> {
 let mut pagination = query.0;
 
-```
+
 if pagination.submitter.is_some() {
     auth.require_permission(LIST_MODERATOR)?;
 }
@@ -105,7 +105,7 @@ query: Query<RecordPagination>,
 let mut connection = pool.connection().await?;
 let mut pagination = query.0;
 
-```
+
 if pagination.submitter.is_some() {
     return Err(CoreError::Unauthorized.into());
 }
@@ -126,7 +126,7 @@ Ok(
     )
     .await?,
 )
-```
+
 
 }
 
@@ -141,7 +141,7 @@ ratelimits: &State<DemonlistRatelimits>,
 ) -> Result<Response2<Tagged<FullRecord>>> {
 let submission = submission.0;
 
-```
+
 let status_is_submitted =
     submission.status() == RecordStatus::Submitted;
 
@@ -281,7 +281,7 @@ if status_is_submitted {
 }
 
 Ok(response)
-```
+
 
 }
 
@@ -298,7 +298,7 @@ let is_helper = auth
 auth.has_permission(LIST_HELPER)
 });
 
-```
+
 let mut connection = match auth {
     Some(auth) => auth.connection,
     None => pool.transaction().await?,
@@ -325,7 +325,7 @@ if !is_helper {
 }
 
 Ok(Tagged(record))
-```
+
 
 }
 
@@ -337,7 +337,7 @@ mut auth: Auth<ApiToken>,
 ) -> Result<Json<Vec<AuditLogEntry<RecordModificationData>>>> {
 auth.require_permission(LIST_ADMINISTRATOR)?;
 
-```
+
 let log =
     pointercrate_demonlist::record::audit::audit_log_for_record(
         record_id,
@@ -355,7 +355,7 @@ if log.is_empty() {
 }
 
 Ok(Json(log))
-```
+
 
 }
 
@@ -396,7 +396,7 @@ let record = record
 auth.commit().await?;
 
 Ok(Tagged(record))
-```
+
 
 }
 
@@ -413,7 +413,7 @@ record_id,
 )
 .await?;
 
-```
+
 if record.status == RecordStatus::Submitted
     && !record
         .was_modified(&mut auth.connection)
@@ -430,7 +430,7 @@ record.delete(&mut auth.connection).await?;
 auth.commit().await?;
 
 Ok(Status::NoContent)
-```
+
 
 }
 
@@ -457,7 +457,7 @@ err.into()
 })?
 .player;
 
-```
+
 let notes = if auth.has_permission(LIST_HELPER) {
     notes_on(
         record_id,
@@ -499,7 +499,7 @@ let notes = if auth.has_permission(LIST_HELPER) {
 };
 
 Ok(Response2::json(notes))
-```
+
 
 }
 
@@ -551,7 +551,7 @@ Ok(
             ),
         ),
 )
-```
+
 
 }
 
@@ -594,7 +594,7 @@ let note = note
 auth.commit().await?;
 
 Ok(Tagged(note))
-```
+
 
 }
 
@@ -614,7 +614,7 @@ note_id,
 )
 .await?;
 
-```
+
 if note.author.as_ref()
     != Some(&auth.user.user().name)
 {
@@ -629,7 +629,7 @@ note.delete(&mut auth.connection).await?;
 auth.commit().await?;
 
 Ok(Status::NoContent)
-```
+
 
 }
 
@@ -645,7 +645,7 @@ record_id,
 video
 );
 
-```
+
 match reqwest::get(&video).await {
     Ok(response) => {
         let status = response.status().as_u16();
@@ -674,7 +674,7 @@ match reqwest::get(&video).await {
         );
     }
 }
-```
+
 
 }
 
@@ -713,7 +713,7 @@ error
         "Trying to execute webhook, though no link was configured!"
     );
 }
-```
+
 
 }
 
