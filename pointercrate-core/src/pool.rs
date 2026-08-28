@@ -14,7 +14,7 @@ impl PointercratePool {
     pub async fn init() -> Self {
         let pool = PointercratePool {
             connection_pool: PgPoolOptions::default()
-                .max_connections(20)
+                .max_connections(5)
                 .connect(&config::database_url())
                 .await
                 .expect("Failed to connect to pointercrate database"),
