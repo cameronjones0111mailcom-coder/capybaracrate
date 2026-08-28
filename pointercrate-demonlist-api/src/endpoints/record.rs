@@ -15,7 +15,8 @@ use pointercrate_demonlist::{
     record::{
         audit::RecordModificationData,
         note::{notes_on, NewNote, Note, PatchNote},
-        submission_count, FullRecord, MinimalRecordPD, PatchRecord, RecordPagination, RecordStatus, Submission,
+        submission_count, FullRecord, MinimalRecordPD, PatchRecord, RecordPagination,
+        RecordStatus, Submission,
     },
     submitter::Submitter,
     LIST_ADMINISTRATOR, LIST_HELPER, LIST_MODERATOR,
@@ -31,13 +32,16 @@ use std::net::IpAddr;
 /// Subject to the following constraints
 /// + Only users with `LIST_MODERATOR` permissions can filter by submitter.
 /// + Only users with `LIST_HELPER` permissions can filter by record status. For all other users,
-/// the `status` property defaults to `APPROVED` (although explicitly setting the status to
-/// `APPROVED` is allowed, UNLESS we also filter by player and the player we filter by match a
-/// verified claim of the user making the request, in which case access to all records is allowed
-/// (the `status` property does not get defaulted, and filtering on it is allowed)
+///   the `status` property defaults to `APPROVED` (although explicitly setting the status to
+///   `APPROVED` is allowed, UNLESS we also filter by player and the player we filter by match a
+///   verified claim of the user making the request, in which case access to all records is allowed
+///   (the `status` property does not get defaulted, and filtering on it is allowed)
 #[localized]
 #[rocket::get("/")]
-pub async fn paginate(mut auth: Auth<ApiToken>, query: Query<RecordPagination>) -> Result<Response2<Json<Vec<MinimalRecordPD>>>> {
+pub async fn paginate(
+    mut auth: Auth<ApiToken>,
+    query: Query<RecordPagination>,
+) -> Result<Response2<Json<Vec<MinimalRecordPD>>>> {
     let mut pagination = query.0;
 
     if pagination.submitter.is_some() {
@@ -48,21 +52,30 @@ pub async fn paginate(mut auth: Auth<ApiToken>, query: Query<RecordPagination>) 
         .await?
         .filter(|c| c.verified);
 
-    if (claim.is_none() || claim.map(|c| c.player.id) != pagination.player) && !auth.has_permission(LIST_HELPER) {
+    if (claim.is_none() || claim.map(|c| c.player.id) != pagination.player)
+        && !auth.has_permission(LIST_HELPER)
+    {
         if pagination.status.is_some() && pagination.status != Some(RecordStatus::Approved) {
-            return Err(CoreError::MissingPermissions { required: LIST_HELPER }.into());
+            return Err(CoreError::MissingPermissions {
+                required: LIST_HELPER,
+            }
+            .into());
         }
 
         pagination.status = Some(RecordStatus::Approved);
     }
 
-    Ok(pagination_response("/api/v1/records/", pagination, &mut auth.connection).await?)
+    Ok(
+        pagination_response("/api/v1/records/", pagination, &mut auth.connection)
+            .await?,
+    )
 }
 
 #[localized]
 #[rocket::get("/", rank = 1)]
 pub async fn unauthed_pagination(
-    pool: &State<PointercratePool>, query: Query<RecordPagination>,
+    pool: &State<PointercratePool>,
+    query: Query<RecordPagination>,
 ) -> Result<Response2<Json<Vec<MinimalRecordPD>>>> {
     let mut connection = pool.connection().await?;
     let mut pagination = query.0;
@@ -77,19 +90,30 @@ pub async fn unauthed_pagination(
 
     pagination.status = Some(RecordStatus::Approved);
 
-    Ok(pagination_response("/api/v1/records/", pagination, &mut connection).await?)
+    Ok(
+        pagination_response("/api/v1/records/", pagination, &mut connection)
+            .await?,
+    )
 }
 
 #[localized]
 #[rocket::post("/", data = "<submission>")]
 pub async fn submit(
-    ip: IpAddr, auth: Option<Auth<ApiToken>>, submission: Json<Submission>, pool: &State<PointercratePool>,
+    ip: IpAddr,
+    auth: Option<Auth<ApiToken>>,
+    submission: Json<Submission>,
+    pool: &State<PointercratePool>,
     ratelimits: &State<DemonlistRatelimits>,
 ) -> Result<Response2<Tagged<FullRecord>>> {
     let submission = submission.0;
+
     let status_is_submitted = submission.status() == RecordStatus::Submitted;
+
     let (is_team_member, user_id) = match auth {
-        Some(ref auth) => (auth.has_permission(LIST_HELPER), Some(auth.user.user().id)),
+        Some(ref auth) => (
+            auth.has_permission(LIST_HELPER),
+            Some(auth.user.user().id),
+        ),
         None => (false, None),
     };
 
@@ -111,7 +135,7 @@ pub async fn submit(
             ratelimits.new_submitters()?;
 
             Submitter::create_submitter(ip, &mut connection).await?
-        },
+        }
     };
 
     // Banned submitters cannot submit records
@@ -121,7 +145,7 @@ pub async fn submit(
 
     let normalized = submission.normalize(&mut connection).await?;
 
-    // check if the player is claimed with submissions locked
+    // Check if the player is claimed with submissions locked
     if let Some(claim) = normalized.verified_player_claim(&mut connection).await? {
         if claim.lock_submissions {
             match user_id {
@@ -134,10 +158,10 @@ pub async fn submit(
     let validated = normalized.validate(&mut connection).await?;
 
     if !is_team_member {
-        // Check ratelimits before any change is made to the database so that the transaction rollback is
-        // easier.
+        // Check ratelimits before any change is made to the database so that the
+        // transaction rollback is easier.
 
-        // Also check the local ratelimit first since that one expires earlier
+        // Also check the local ratelimit first since that one expires earlier.
         ratelimits.record_submission(ip)?;
         ratelimits.record_submission_global()?;
     }
@@ -146,7 +170,11 @@ pub async fn submit(
 
     connection.commit().await.map_err(DemonlistError::from)?;
 
-    // FIXME: This is fucking stupid
+    // Run video validation in the background.
+    //
+    // IMPORTANT:
+    // The validation no longer deletes the record if the video URL cannot
+    // be reached. The record remains in the database for review.
     if status_is_submitted {
         if let Some(ref video) = record.video {
             tokio::spawn(validate(
@@ -167,7 +195,9 @@ pub async fn submit(
     if status_is_submitted {
         response = response.with_header(
             "X-SUBMISSION-COUNT",
-            submission_count(&mut *pool.connection().await?).await?.to_string(),
+            submission_count(&mut *pool.connection().await?)
+                .await?
+                .to_string(),
         );
     }
 
@@ -176,8 +206,14 @@ pub async fn submit(
 
 #[localized]
 #[rocket::get("/<record_id>/")]
-pub async fn get(record_id: i32, auth: Option<Auth<ApiToken>>, pool: &State<PointercratePool>) -> Result<Tagged<FullRecord>> {
-    let is_helper = auth.as_ref().is_some_and(|auth| auth.has_permission(LIST_HELPER));
+pub async fn get(
+    record_id: i32,
+    auth: Option<Auth<ApiToken>>,
+    pool: &State<PointercratePool>,
+) -> Result<Tagged<FullRecord>> {
+    let is_helper = auth
+        .as_ref()
+        .is_some_and(|auth| auth.has_permission(LIST_HELPER));
 
     let mut connection = match auth {
         Some(auth) => auth.connection,
@@ -189,8 +225,11 @@ pub async fn get(record_id: i32, auth: Option<Auth<ApiToken>>, pool: &State<Poin
     // TODO: allow access if auth is provided and a verified claim on the record's player is given
     if !is_helper {
         if record.status != RecordStatus::Approved {
-            return Err(DemonlistError::RecordNotFound { record_id }.into());
+            return Err(
+                DemonlistError::RecordNotFound { record_id }.into()
+            );
         }
+
         record.submitter = None;
         record.raw_footage = None;
     }
@@ -200,13 +239,22 @@ pub async fn get(record_id: i32, auth: Option<Auth<ApiToken>>, pool: &State<Poin
 
 #[localized]
 #[rocket::get("/<record_id>/audit/")]
-pub async fn audit(record_id: i32, mut auth: Auth<ApiToken>) -> Result<Json<Vec<AuditLogEntry<RecordModificationData>>>> {
+pub async fn audit(
+    record_id: i32,
+    mut auth: Auth<ApiToken>,
+) -> Result<Json<Vec<AuditLogEntry<RecordModificationData>>>> {
     auth.require_permission(LIST_ADMINISTRATOR)?;
 
-    let log = pointercrate_demonlist::record::audit::audit_log_for_record(record_id, &mut auth.connection).await?;
+    let log = pointercrate_demonlist::record::audit::audit_log_for_record(
+        record_id,
+        &mut auth.connection,
+    )
+    .await?;
 
     if log.is_empty() {
-        return Err(DemonlistError::RecordNotFound { record_id }.into());
+        return Err(
+            DemonlistError::RecordNotFound { record_id }.into()
+        );
     }
 
     Ok(Json(log))
@@ -215,7 +263,10 @@ pub async fn audit(record_id: i32, mut auth: Auth<ApiToken>) -> Result<Json<Vec<
 #[localized]
 #[rocket::patch("/<record_id>/", data = "<patch>")]
 pub async fn patch(
-    record_id: i32, mut auth: Auth<ApiToken>, precondition: Precondition, patch: Json<PatchRecord>,
+    record_id: i32,
+    mut auth: Auth<ApiToken>,
+    precondition: Precondition,
+    patch: Json<PatchRecord>,
 ) -> Result<Tagged<FullRecord>> {
     let record = FullRecord::by_id(record_id, &mut auth.connection).await?;
 
@@ -237,10 +288,16 @@ pub async fn patch(
 
 #[localized]
 #[rocket::delete("/<record_id>/")]
-pub async fn delete(record_id: i32, mut auth: Auth<ApiToken>, precondition: Precondition) -> Result<Status> {
+pub async fn delete(
+    record_id: i32,
+    mut auth: Auth<ApiToken>,
+    precondition: Precondition,
+) -> Result<Status> {
     let record = FullRecord::by_id(record_id, &mut auth.connection).await?;
 
-    if record.status == RecordStatus::Submitted && !record.was_modified(&mut auth.connection).await? {
+    if record.status == RecordStatus::Submitted
+        && !record.was_modified(&mut auth.connection).await?
+    {
         auth.require_permission(LIST_HELPER)?;
     } else {
         auth.require_permission(LIST_MODERATOR)?;
@@ -256,25 +313,43 @@ pub async fn delete(record_id: i32, mut auth: Auth<ApiToken>, precondition: Prec
 
 #[localized]
 #[rocket::get("/<record_id>/notes/")]
-pub async fn get_notes(record_id: i32, mut auth: Auth<ApiToken>) -> Result<Response2<Json<Vec<Note>>>> {
-    let record_holder_id = sqlx::query!("SELECT player FROM records WHERE id = $1", record_id)
-        .fetch_one(&mut *auth.connection)
-        .await
-        .map_err(|err| {
-            if let sqlx::Error::RowNotFound = err {
-                DemonlistError::RecordNotFound { record_id }
-            } else {
-                err.into()
-            }
-        })?
-        .player;
+pub async fn get_notes(
+    record_id: i32,
+    mut auth: Auth<ApiToken>,
+) -> Result<Response2<Json<Vec<Note>>>> {
+    let record_holder_id = sqlx::query!(
+        "SELECT player FROM records WHERE id = $1",
+        record_id
+    )
+    .fetch_one(&mut *auth.connection)
+    .await
+    .map_err(|err| {
+        if let sqlx::Error::RowNotFound = err {
+            DemonlistError::RecordNotFound { record_id }
+        } else {
+            err.into()
+        }
+    })?
+    .player;
 
     let notes = if auth.has_permission(LIST_HELPER) {
         notes_on(record_id, false, &mut auth.connection).await?
     } else {
-        match PlayerClaim::get(auth.user.user().id, record_holder_id, &mut auth.connection).await {
-            Ok(claim) if claim.verified => notes_on(record_id, true, &mut auth.connection).await?,
-            Ok(_) | Err(DemonlistError::ClaimNotFound { .. }) => return Err(DemonlistError::RecordNotFound { record_id }.into()),
+        match PlayerClaim::get(
+            auth.user.user().id,
+            record_holder_id,
+            &mut auth.connection,
+        )
+        .await
+        {
+            Ok(claim) if claim.verified => {
+                notes_on(record_id, true, &mut auth.connection).await?
+            }
+            Ok(_) | Err(DemonlistError::ClaimNotFound { .. }) => {
+                return Err(
+                    DemonlistError::RecordNotFound { record_id }.into()
+                );
+            }
             Err(err) => return Err(err.into()),
         }
     };
@@ -284,28 +359,54 @@ pub async fn get_notes(record_id: i32, mut auth: Auth<ApiToken>) -> Result<Respo
 
 #[localized]
 #[rocket::post("/<record_id>/notes/", data = "<data>")]
-pub async fn add_note(record_id: i32, mut auth: Auth<ApiToken>, data: Json<NewNote>) -> Result<Response2<Tagged<Note>>> {
+pub async fn add_note(
+    record_id: i32,
+    mut auth: Auth<ApiToken>,
+    data: Json<NewNote>,
+) -> Result<Response2<Tagged<Note>>> {
     auth.require_permission(LIST_HELPER)?;
 
     let record = FullRecord::by_id(record_id, &mut auth.connection).await?;
 
-    let mut note = Note::create_on(&record, data.0, &mut auth.connection).await?;
+    let mut note =
+        Note::create_on(&record, data.0, &mut auth.connection).await?;
 
     note.author = Some(auth.user.into_user().name);
 
     let note_id = note.id;
 
-    auth.connection.commit().await.map_err(DemonlistError::from)?;
+    auth.connection
+        .commit()
+        .await
+        .map_err(DemonlistError::from)?;
 
-    Ok(Response2::tagged(note)
-        .status(Status::Created)
-        .with_header("Location", format!("/api/v1/records/{}/notes/{}/", record.id, note_id)))
+    Ok(
+        Response2::tagged(note)
+            .status(Status::Created)
+            .with_header(
+                "Location",
+                format!(
+                    "/api/v1/records/{}/notes/{}/",
+                    record.id,
+                    note_id
+                ),
+            ),
+    )
 }
 
 #[localized]
-#[rocket::patch("/<record_id>/notes/<note_id>/", data = "<patch>")]
-pub async fn patch_note(record_id: i32, note_id: i32, mut auth: Auth<ApiToken>, patch: Json<PatchNote>) -> Result<Tagged<Note>> {
-    let note = Note::by_id(record_id, note_id, &mut auth.connection).await?;
+#[rocket::patch(
+    "/<record_id>/notes/<note_id>/",
+    data = "<patch>"
+)]
+pub async fn patch_note(
+    record_id: i32,
+    note_id: i32,
+    mut auth: Auth<ApiToken>,
+    patch: Json<PatchNote>,
+) -> Result<Tagged<Note>> {
+    let note =
+        Note::by_id(record_id, note_id, &mut auth.connection).await?;
 
     if note.author.as_ref() != Some(&auth.user.user().name) {
         auth.require_permission(LIST_ADMINISTRATOR)?;
@@ -313,7 +414,9 @@ pub async fn patch_note(record_id: i32, note_id: i32, mut auth: Auth<ApiToken>, 
         auth.require_permission(LIST_HELPER)?;
     }
 
-    let note = note.apply_patch(patch.0, &mut auth.connection).await?;
+    let note = note
+        .apply_patch(patch.0, &mut auth.connection)
+        .await?;
 
     auth.commit().await?;
 
@@ -322,8 +425,13 @@ pub async fn patch_note(record_id: i32, note_id: i32, mut auth: Auth<ApiToken>, 
 
 #[localized]
 #[rocket::delete("/<record_id>/notes/<note_id>/")]
-pub async fn delete_note(record_id: i32, note_id: i32, mut auth: Auth<ApiToken>) -> Result<Status> {
-    let note = Note::by_id(record_id, note_id, &mut auth.connection).await?;
+pub async fn delete_note(
+    record_id: i32,
+    note_id: i32,
+    mut auth: Auth<ApiToken>,
+) -> Result<Status> {
+    let note =
+        Note::by_id(record_id, note_id, &mut auth.connection).await?;
 
     if note.author.as_ref() != Some(&auth.user.user().name) {
         auth.require_permission(LIST_ADMINISTRATOR)?;
@@ -338,37 +446,43 @@ pub async fn delete_note(record_id: i32, note_id: i32, mut auth: Auth<ApiToken>)
     Ok(Status::NoContent)
 }
 
-async fn validate(record_id: i32, video: String, body: serde_json::Value, mut connection: PoolConnection<Postgres>) {
-    debug!("Verifying that submission {} with video {} actually is valid", record_id, video);
+async fn validate(
+    record_id: i32,
+    video: String,
+    body: serde_json::Value,
+    _connection: PoolConnection<Postgres>,
+) {
+    debug!(
+        "Verifying that submission {} with video {} actually is valid",
+        record_id, video
+    );
 
     match reqwest::get(&video).await {
         Ok(response) => {
             let status = response.status().as_u16();
 
             if (200..400).contains(&status) {
-                debug!("GET request yielded some sort of successful response, executing webhook");
+                debug!(
+                    "GET request yielded some sort of successful response, executing webhook"
+                );
 
                 execute_webhook(body).await;
             } else {
-                warn!("Server response to 'GET {}' was {:?}, deleting submission!", video, response);
-
-                match FullRecord::delete_by_id(record_id, &mut connection).await {
-                    Ok(_) => (),
-                    Err(error) => error!("INTERNAL SERVER ERROR: Failure to delete record - {:?}!", error),
-                }
+                warn!(
+                    "Server response to 'GET {}' was {:?}. \
+                     Keeping submission {} for review.",
+                    video, response, record_id
+                );
             }
-        },
+        }
+
         Err(error) => {
             error!(
-                "INTERNAL SERVER ERROR: GET request to verify video failed: {:?}. Deleting submission",
-                error
+                "INTERNAL SERVER ERROR: GET request to verify video failed: {:?}. \
+                 Keeping submission {} for review.",
+                error, record_id
             );
-
-            match FullRecord::delete_by_id(record_id, &mut connection).await {
-                Ok(_) => (),
-                Err(error) => error!("INTERNAL SERVER ERROR: Failure to delete record - {:?}!", error),
-            }
-        },
+        }
     }
 }
 
@@ -381,8 +495,16 @@ async fn execute_webhook(body: serde_json::Value) {
             .send()
             .await
         {
-            Err(error) => error!("INTERNAL SERVER ERROR: Failure to execute discord webhook: {:?}", error),
-            Ok(_) => debug!("Successfully executed discord webhook"),
+            Err(error) => {
+                error!(
+                    "INTERNAL SERVER ERROR: Failure to execute discord webhook: {:?}",
+                    error
+                );
+            }
+
+            Ok(_) => {
+                debug!("Successfully executed discord webhook");
+            }
         }
     } else {
         warn!("Trying to execute webhook, though no link was configured!");
@@ -396,12 +518,26 @@ fn webhook_embed(record: &FullRecord) -> serde_json::Value {
             {
                 "type": "rich",
                 "title": format!("{}% on {}", record.progress, record.demon.name),
-                "description": format!("{} just got {}% on {}! Go add their record!", record.player.name, record.progress, record.demon.name),
+                "description": format!(
+                    "{} just got {}% on {}! Go add their record!",
+                    record.player.name,
+                    record.progress,
+                    record.demon.name
+                ),
                 "footer": {
-                    "text": format!("This record has been submitted by submitter #{}", record.submitter.map(|s|s.id).unwrap_or(1))
+                    "text": format!(
+                        "This record has been submitted by submitter #{}",
+                        record.submitter
+                            .map(|s| s.id)
+                            .unwrap_or(1)
+                    )
                 },
                 "author": {
-                    "name": format!("{} (ID: {})", record.player.name, record.player.id),
+                    "name": format!(
+                        "{} (ID: {})",
+                        record.player.name,
+                        record.player.id
+                    ),
                     "url": record.video
                 },
                 "thumbnail": {
