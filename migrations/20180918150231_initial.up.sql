@@ -65,4 +65,3 @@ CREATE TABLE IF NOT EXISTS creators (
     creator INT NOT NULL REFERENCES players(id) ON DELETE RESTRICT ON UPDATE CASCADE,
     PRIMARY KEY (demon, creator)
 );
-```
